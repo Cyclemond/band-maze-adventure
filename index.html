@@ -142,6 +142,9 @@ let winTime     = 0;
 let winStars    = [];
 let pickupFX    = [];
 
+// Band member count
+let numMembers  = 4;   // 1–4
+
 // Timed mode
 let timedMode   = false;
 let totalStars  = 0;     // running total across rounds
@@ -248,7 +251,7 @@ function startGame(d) {
       if (mazeGrid[y][x]===0 && !(x===1&&y===1)) open.push([x,y]);
   shuffle(open);
 
-  items = INSTRUMENTS.map((inst, i) => ({
+  items = INSTRUMENTS.slice(0, numMembers).map((inst, i) => ({
     inst, gx: open[i][0], gy: open[i][1], collected: false
   }));
 
@@ -272,7 +275,7 @@ function startGame(d) {
 
 function updateHUD() {
   hudEl.innerHTML = '';
-  for (const inst of INSTRUMENTS) {
+  for (const inst of INSTRUMENTS.slice(0, numMembers)) {
     const d = document.createElement('div');
     d.className = 'hud-slot' + (collected.has(inst.id) ? ' found' : '');
     d.textContent = inst.emoji;
@@ -451,8 +454,50 @@ function drawMenu() {
     menuHits[dk] = { x:bx, y:by, w:bw, h:bh };
   }
 
+  // Band member count selector
+  const mbY   = H * 0.535;
+  const mbBtnW = Math.min(W * 0.12, 82);
+  const mbBtnH = Math.min(H * 0.08, 58);
+  const mbGap  = mbBtnW * 1.18;
+
+  ctx.fillStyle = '#BDC3C7';
+  ctx.font = `bold ${Math.min(17, mbBtnH*0.32)}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.fillText('👥  How many band members?', W/2, mbY - mbBtnH*0.5 - 8);
+
+  for (let n = 1; n <= 4; n++) {
+    const bx  = W/2 + (n - 2.5) * mbGap;
+    const sel = numMembers === n;
+
+    ctx.save();
+    if (sel) { ctx.shadowColor = '#9B59B6'; ctx.shadowBlur = 20; }
+    rr(bx - mbBtnW/2, mbY - mbBtnH/2, mbBtnW, mbBtnH, 12,
+       sel ? '#8E44AD' : 'rgba(255,255,255,0.1)', null);
+    if (sel) rr(bx - mbBtnW/2, mbY - mbBtnH/2, mbBtnW, mbBtnH, 12,
+                null, 'rgba(255,255,255,0.6)');
+    ctx.restore();
+
+    // Number
+    ctx.fillStyle = sel ? 'white' : '#aaa';
+    ctx.font = `bold ${Math.min(26, mbBtnH*0.46)}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.fillText(n, bx, mbY + mbBtnH*0.05);
+
+    // Mini band member icons below the number
+    const iconSz = Math.min(9, mbBtnH*0.16);
+    for (let k = 0; k < n; k++) {
+      const ix = bx + (k - (n-1)/2) * (iconSz*2.2);
+      ctx.fillStyle = sel ? BAND[k].col : '#666';
+      ctx.beginPath();
+      ctx.arc(ix, mbY + mbBtnH*0.32, iconSz, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    menuHits[`mb${n}`] = { x:bx, y:mbY, w:mbBtnW, h:mbBtnH };
+  }
+
   // Timed mode toggle
-  const tby = H * 0.54;
+  const tby = H * 0.655;
   const tbw = Math.min(W*0.42, 290);
   const tbh = Math.min(H*0.075, 54);
   ctx.save();
@@ -490,7 +535,7 @@ function drawMenu() {
   // Start button
   const sw = Math.min(W*0.38, 250);
   const sh = Math.min(H*0.1, 70);
-  const sy2 = H * 0.66;
+  const sy2 = H * 0.775;
   ctx.save();
   ctx.shadowColor = '#2ECC71';
   ctx.shadowBlur = 20 + Math.sin(T*0.005) * 12;
@@ -502,11 +547,12 @@ function drawMenu() {
   ctx.fillText('▶  START!', W/2, sy2 + sh*0.18);
   menuHits['start'] = { x:W/2, y:sy2, w:sw, h:sh };
 
-  // Preview band
-  const preY  = H * 0.85;
-  const preSz = Math.min(W, H) * 0.028;
-  for (let i = 0; i < 4; i++) {
-    const bx  = W/2 + (i - 1.5) * preSz * 3.8;
+  // Preview band — show only selected number of members
+  const preY  = H * 0.91;
+  const preSz = Math.min(W, H) * 0.026;
+  const preGap = preSz * 3.8 * (4 / Math.max(numMembers, 1));
+  for (let i = 0; i < numMembers; i++) {
+    const bx  = W/2 + (i - (numMembers-1)/2) * Math.min(preGap, preSz*4.5);
     const bob = Math.sin(T*0.005 + i*1.4) * preSz * 0.35;
     drawChar(bx, preY + bob, preSz, BAND[i].col, BAND[i].hat, true, false);
     ctx.font = `${preSz * 1.5}px Arial`;
@@ -517,6 +563,15 @@ function drawMenu() {
 }
 
 // ── SCENE: ROOM ────────────────────────────────
+
+// Centred X positions for 1–4 band members on stage
+const BAND_POS_X = {
+  1: [0.45],
+  2: [0.30, 0.60],
+  3: [0.23, 0.45, 0.67],
+  4: [0.18, 0.36, 0.54, 0.72],
+};
+const BAND_POS_Y = [0.36, 0.30, 0.36, 0.30]; // alternating stagger
 
 function drawRoom() {
   const fg = ctx.createLinearGradient(0, 0, 0, H);
@@ -582,10 +637,12 @@ function drawRoom() {
   ctx.textAlign = 'center';
   ctx.fillText('🎵 BAND ROOM 🎵', W/2, signY + signH*0.65);
 
-  const charSz = Math.min(W, H) * 0.038;
-  for (const bm of BAND) {
-    const bx  = bm.rx * W;
-    const by  = bm.ry * H;
+  const charSz  = Math.min(W, H) * 0.038;
+  const posXArr = BAND_POS_X[numMembers];
+  for (let bi = 0; bi < numMembers; bi++) {
+    const bm  = BAND[bi];
+    const bx  = posXArr[bi] * W;
+    const by  = BAND_POS_Y[bi] * H;
     const bob = Math.sin(T*0.004 + bm.rx*8) * (collected.has(bm.inst) ? 5 : 1.5);
     const hasInst = collected.has(bm.inst);
 
@@ -933,12 +990,12 @@ function drawWin() {
     ctx.fillText(`Total stars collected: ${totalStars}`, W/2, panelY + panelH - 10);
   }
 
-  // Happy band
+  // Happy band — only show active members
   const bSz  = Math.min(W,H)*0.040;
-  const bGap = Math.min(W*0.2, 185);
+  const bGap = Math.min(W*0.2, 185) * (4 / Math.max(numMembers, 1));
   const bY   = H * (timedMode ? 0.57 : 0.52);
-  for (let i=0; i<4; i++) {
-    const bx  = W/2 + (i-1.5)*bGap;
+  for (let i=0; i<numMembers; i++) {
+    const bx  = W/2 + (i - (numMembers-1)/2)*bGap;
     const bob = Math.sin(winTime*0.07 + i*1.3) * bSz*0.45;
     drawChar(bx, bY+bob, bSz, BAND[i].col, BAND[i].hat, true, false);
     ctx.font = `${bSz*2}px Arial`;
@@ -1025,7 +1082,7 @@ function checkPickup() {
 }
 
 function checkMazeExit() {
-  if (collected.size === 4 && mp.gx===1 && mp.gy===1) {
+  if (collected.size === numMembers && mp.gx===1 && mp.gy===1) {
     // Calculate round time and stars
     roundSecs  = (T - mazeStart) / 1000;
     roundStars = timedMode ? starsForTime(roundSecs) : 0;
@@ -1151,6 +1208,7 @@ function handleTap(cx, cy) {
       if (Math.abs(cx-btn.x)<btn.w/2 && Math.abs(cy-btn.y)<btn.h/2) {
         if      (key==='start') startGame(diff);
         else if (key==='timed') timedMode = !timedMode;
+        else if (key.startsWith('mb')) numMembers = parseInt(key.slice(2));
         else if (key in DIFFICULTIES) diff = key;
       }
     }
