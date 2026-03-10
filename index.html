@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Band Maze Adventure!</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+      touch-action: none;
+    }
+    #gameCanvas { display: block; }
+
+    #dpad {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      display: none;
+      z-index: 20;
+    }
+    .dpad-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 72px);
+      grid-template-rows: repeat(3, 72px);
+      gap: 5px;
+    }
+    .dpad-btn {
+      width: 72px; height: 72px;
+      background: rgba(255,255,255,0.22);
+      border: 3px solid rgba(255,255,255,0.45);
+      border-radius: 18px;
+      font-size: 34px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      user-select: none; -webkit-user-select: none;
+      color: white;
+      transition: background 0.08s, transform 0.08s;
+    }
+    .dpad-btn.pressed {
+      background: rgba(255,255,255,0.55);
+      transform: scale(0.91);
+    }
+    .dpad-empty { width: 72px; height: 72px; }
+
+    #hud {
+      position: fixed;
+      top: 12px; left: 12px;
+      display: none;
+      flex-direction: row;
+      gap: 8px;
+      z-index: 20;
+    }
+    .hud-slot {
+      width: 56px; height: 56px;
+      background: rgba(0,0,0,0.55);
+      border: 3px solid rgba(255,255,255,0.3);
+      border-radius: 14px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 30px;
+      transition: border-color 0.3s, background 0.3s;
+    }
+    .hud-slot.found {
+      border-color: gold;
+      background: rgba(255,200,0,0.28);
+      box-shadow: 0 0 12px gold;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+
+<div id="dpad">
+  <div class="dpad-grid">
+    <div class="dpad-empty"></div>
+    <button class="dpad-btn" id="btn-up">▲</button>
+    <div class="dpad-empty"></div>
+    <button class="dpad-btn" id="btn-left">◀</button>
+    <div class="dpad-empty"></div>
+    <button class="dpad-btn" id="btn-right">▶</button>
+    <div class="dpad-empty"></div>
+    <button class="dpad-btn" id="btn-down">▼</button>
+    <div class="dpad-empty"></div>
+  </div>
+</div>
+
+<div id="hud"></div>
+
+<script>
+// ================================================
+//  BAND MAZE ADVENTURE
+// ================================================
+
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+const dpadEl = document.getElementById('dpad');
+const hudEl  = document.getElementById('hud');
+
+let W = 0, H = 0;
+function resize() {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ── CONSTANTS ──────────────────────────────────
+
+const DIFFICULTIES = {
+  easy:   { mw: 13, mh: 11, label: '⭐ Easy',    col: '#27AE60' },
+  medium: { mw: 21, mh: 17, label: '⭐⭐ Medium', col: '#F39C12' },
+  hard:   { mw: 31, mh: 25, label: '⭐⭐⭐ Hard',  col: '#E74C3C' },
+};
+
+const INSTRUMENTS = [
+  { id:'guitar',   name:'Guitar',   emoji:'🎸', col:'#C07030', col2:'#7B3F10' },
+  { id:'drums',    name:'Drums',    emoji:'🥁', col:'#E74C3C', col2:'#922B21' },
+  { id:'keyboard', name:'Keyboard', emoji:'🎹', col:'#95A5A6', col2:'#2C3E50' },
+  { id:'trumpet',  name:'Trumpet',  emoji:'🎺', col:'#F1C40F', col2:'#B7950B' },
+];
+
+const BAND = [
+  { name:'Roxy',  col:'#E74C3C', hat:'#922B21', inst:'guitar',   rx:0.18, ry:0.36 },
+  { name:'Bash',  col:'#9B59B6', hat:'#6C3483', inst:'drums',    rx:0.36, ry:0.30 },
+  { name:'Keys',  col:'#27AE60', hat:'#1E8449', inst:'keyboard', rx:0.54, ry:0.36 },
+  { name:'Zippy', col:'#F39C12', hat:'#CA6F1E', inst:'trumpet',  rx:0.72, ry:0.30 },
+];
+
+// ── STATE ──────────────────────────────────────
+
+let scene       = 'menu';   // menu | room | maze | win
+let diff        = 'medium';
+let mazeGrid    = null;
+let MW = 0, MH = 0;
+let CELL        = 40;
+let items       = [];       // {inst, gx, gy, collected}
+let collected   = new Set();
+let winTime     = 0;
+let winStars    = [];
+let pickupFX    = [];       // floating text effects
+
+// Room player
+const rp = { x:0.5, y:0.75 };
+
+// Maze player
+const mp = { gx:1, gy:1, px:0, py:0, tx:0, ty:0, moving:false };
+
+// Camera
+let camX = 0, camY = 0;
+
+// Input
+const btnState  = { up:false, down:false, left:false, right:false };
+const keysHeld  = new Set();
+let repeatDir   = null;
+let repeatTimer = null;
+const REPEAT_MS = 130;
+
+// Menu button hit areas (populated each draw)
+let menuHits = {};
+let winBtn   = null;
+
+// Timing
+let T    = 0;   // global ms counter
+let lastT = 0;
+
+// ── MAZE GENERATION ────────────────────────────
+
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function generateMaze(w, h) {
+  // Recursive backtracker; w & h must be odd
+  const g = Array.from({length: h}, () => new Array(w).fill(1));
+  const stack = [[1,1]];
+  g[1][1] = 0;
+  while (stack.length) {
+    const [cx, cy] = stack[stack.length - 1];
+    const dirs = shuffle([[0,-2],[0,2],[-2,0],[2,0]]);
+    let carved = false;
+    for (const [dx, dy] of dirs) {
+      const nx = cx+dx, ny = cy+dy;
+      if (nx>0 && nx<w-1 && ny>0 && ny<h-1 && g[ny][nx]===1) {
+        g[cy+dy/2][cx+dx/2] = 0;
+        g[ny][nx] = 0;
+        stack.push([nx, ny]);
+        carved = true;
+        break;
+      }
+    }
+    if (!carved) stack.pop();
+  }
+  return g;
+}
+
+// ── INITIALISE GAME ────────────────────────────
+
+function startGame(d) {
+  diff = d;
+  const cfg = DIFFICULTIES[d];
+  MW = cfg.mw; MH = cfg.mh;
+
+  CELL = Math.max(28, Math.min(52,
+    Math.floor(Math.min(W * 0.9, H * 0.9) / Math.max(MW, MH))
+  ));
+
+  mazeGrid = generateMaze(MW, MH);
+
+  // Collect all open cells (not the start)
+  const open = [];
+  for (let y=1; y<MH-1; y++)
+    for (let x=1; x<MW-1; x++)
+      if (mazeGrid[y][x]===0 && !(x===1&&y===1)) open.push([x,y]);
+  shuffle(open);
+
+  items = INSTRUMENTS.map((inst, i) => ({
+    inst, gx: open[i][0], gy: open[i][1], collected: false
+  }));
+
+  collected.clear();
+  pickupFX = [];
+
+  // Room player reset
+  rp.x = 0.5; rp.y = 0.75;
+
+  // Maze player reset
+  mp.gx = 1; mp.gy = 1;
+  mp.px = CELL * 1.5; mp.py = CELL * 1.5;
+  mp.tx = mp.px; mp.ty = mp.py;
+  mp.moving = false;
+
+  scene = 'room';
+  dpadEl.style.display = 'flex';
+  hudEl.style.display  = 'flex';
+  updateHUD();
+}
+
+function updateHUD() {
+  hudEl.innerHTML = '';
+  for (const inst of INSTRUMENTS) {
+    const d = document.createElement('div');
+    d.className = 'hud-slot' + (collected.has(inst.id) ? ' found' : '');
+    d.textContent = inst.emoji;
+    hudEl.appendChild(d);
+  }
+}
+
+// ── CAMERA ─────────────────────────────────────
+
+function updateCamera() {
+  const ideal_x = mp.px - W/2;
+  const ideal_y = mp.py - H/2;
+  const maxX = MW * CELL - W;
+  const maxY = MH * CELL - H;
+  camX = MW*CELL < W ? -(W - MW*CELL)/2 : Math.max(0, Math.min(maxX, ideal_x));
+  camY = MH*CELL < H ? -(H - MH*CELL)/2 : Math.max(0, Math.min(maxY, ideal_y));
+}
+
+// ── DRAWING HELPERS ────────────────────────────
+
+function rr(x, y, w, h, r, fill, stroke) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
+  if (fill)  { ctx.fillStyle = fill;     ctx.fill();   }
+  if (stroke){ ctx.strokeStyle = stroke; ctx.stroke(); }
+}
+
+// Top-down character: circle body + hat + face
+function drawChar(x, y, sz, bodyCol, hatCol, happy, isPlayer) {
+  // shadow
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
+  ctx.beginPath();
+  ctx.ellipse(x, y + sz*0.6, sz*0.75, sz*0.22, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+
+  // body
+  ctx.beginPath();
+  ctx.arc(x, y, sz, 0, Math.PI*2);
+  ctx.fillStyle = bodyCol;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.28)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // hat brim
+  rr(x - sz*0.75, y - sz*0.5,  sz*1.5,  sz*0.35, 3, hatCol, null);
+  // hat crown
+  rr(x - sz*0.48, y - sz*0.5 - sz*0.55, sz*0.96, sz*0.58, 4, hatCol, null);
+  // hat band highlight
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  rr(x - sz*0.75, y - sz*0.5 + sz*0.07, sz*1.5, sz*0.1, 2, 'rgba(255,255,255,0.18)', null);
+
+  // whites of eyes
+  ctx.fillStyle = 'white';
+  ctx.beginPath();
+  ctx.arc(x - sz*0.27, y + sz*0.08, sz*0.19, 0, Math.PI*2);
+  ctx.arc(x + sz*0.27, y + sz*0.08, sz*0.19, 0, Math.PI*2);
+  ctx.fill();
+
+  // pupils
+  ctx.fillStyle = isPlayer ? '#1A5276' : '#333';
+  ctx.beginPath();
+  ctx.arc(x - sz*0.25, y + sz*0.10, sz*0.10, 0, Math.PI*2);
+  ctx.arc(x + sz*0.25, y + sz*0.10, sz*0.10, 0, Math.PI*2);
+  ctx.fill();
+
+  // mouth
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = sz*0.09;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  if (happy) {
+    ctx.arc(x, y + sz*0.20, sz*0.26, 0.08, Math.PI - 0.08);
+  } else {
+    ctx.arc(x, y + sz*0.52, sz*0.26, Math.PI + 0.08, -0.08);
+  }
+  ctx.stroke();
+}
+
+// ── SCENE: MENU ────────────────────────────────
+
+function drawMenu() {
+  // background
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#12102e');
+  bg.addColorStop(1, '#0a0820');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // twinkling stars
+  ctx.fillStyle = 'white';
+  for (let i = 0; i < 60; i++) {
+    const sx = (i * 173.7 + T*0.03) % W;
+    const sy = (i * 97.3) % H;
+    const ss = Math.sin(T*0.003 + i*1.3) * 1 + 1.5;
+    ctx.beginPath();
+    ctx.arc(sx, sy, ss, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  ctx.textAlign = 'center';
+
+  // title
+  const ts = Math.min(W * 0.11, 78);
+  ctx.save();
+  ctx.shadowColor = '#F39C12';
+  ctx.shadowBlur = 28;
+  const tg = ctx.createLinearGradient(W*0.2, 0, W*0.8, 0);
+  tg.addColorStop(0, '#F1C40F');
+  tg.addColorStop(0.5, '#FF6B35');
+  tg.addColorStop(1, '#F1C40F');
+  ctx.fillStyle = tg;
+  ctx.font = `bold ${ts}px Arial`;
+  ctx.fillText('🎸 Band Maze! 🎸', W/2, H*0.19);
+  ctx.restore();
+
+  ctx.fillStyle = '#BDC3C7';
+  ctx.font = `${Math.min(ts*0.38, 26)}px Arial`;
+  ctx.fillText('Help the band find their missing instruments!', W/2, H*0.28);
+
+  // difficulty buttons
+  const diffs = ['easy','medium','hard'];
+  const bw = Math.min(W*0.26, 185);
+  const bh = Math.min(H*0.09, 64);
+  const gap = bw * 1.18;
+  const by  = H * 0.44;
+  menuHits = {};
+
+  for (let i = 0; i < 3; i++) {
+    const dk  = diffs[i];
+    const cfg = DIFFICULTIES[dk];
+    const bx  = W/2 + (i-1) * gap;
+    const sel = diff === dk;
+
+    ctx.save();
+    if (sel) { ctx.shadowColor = cfg.col; ctx.shadowBlur = 22; }
+    rr(bx - bw/2, by - bh/2, bw, bh, 14,
+       sel ? cfg.col : 'rgba(255,255,255,0.1)', null);
+    if (sel) rr(bx - bw/2, by - bh/2, bw, bh, 14, null, 'rgba(255,255,255,0.6)');
+    ctx.restore();
+
+    ctx.fillStyle = sel ? 'white' : '#aaa';
+    ctx.font = `bold ${Math.min(20, bh*0.36)}px Arial`;
+    ctx.fillText(cfg.label, bx, by + bh*0.16);
+
+    menuHits[dk] = { x:bx, y:by, w:bw, h:bh };
+  }
+
+  // Start button
+  const sw = Math.min(W*0.38, 250);
+  const sh = Math.min(H*0.1, 70);
+  const sy2 = H * 0.60;
+  const pulse = 20 + Math.sin(T*0.005) * 12;
+  ctx.save();
+  ctx.shadowColor = '#2ECC71';
+  ctx.shadowBlur = pulse;
+  rr(W/2 - sw/2, sy2 - sh/2, sw, sh, sh/2, '#27AE60', null);
+  ctx.restore();
+  rr(W/2 - sw/2, sy2 - sh/2, sw, sh, sh/2, null, 'rgba(255,255,255,0.25)');
+  ctx.fillStyle = 'white';
+  ctx.font = `bold ${Math.min(28, sh*0.5)}px Arial`;
+  ctx.fillText('▶  START!', W/2, sy2 + sh*0.18);
+  menuHits['start'] = { x:W/2, y:sy2, w:sw, h:sh };
+
+  // Preview band with dancing animation
+  const preY  = H * 0.83;
+  const preSz = Math.min(W, H) * 0.03;
+  for (let i = 0; i < 4; i++) {
+    const bx  = W/2 + (i - 1.5) * preSz * 3.8;
+    const bob = Math.sin(T*0.005 + i*1.4) * preSz * 0.35;
+    drawChar(bx, preY + bob, preSz, BAND[i].col, BAND[i].hat, true, false);
+    ctx.font = `${preSz * 1.5}px Arial`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(INSTRUMENTS[i].emoji, bx, preY + bob - preSz*2.2);
+    ctx.textBaseline = 'alphabetic';
+  }
+}
+
+// ── SCENE: ROOM ────────────────────────────────
+
+function drawRoom() {
+  // Wooden floor
+  const fg = ctx.createLinearGradient(0, 0, 0, H);
+  fg.addColorStop(0, '#C8943E');
+  fg.addColorStop(1, '#A0722A');
+  ctx.fillStyle = fg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Floor boards
+  const bh = H / 18;
+  ctx.strokeStyle = 'rgba(0,0,0,0.07)';
+  ctx.lineWidth = 1;
+  for (let y=0; y<H; y+=bh) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  // Stage backdrop (top 42% of room)
+  const stageH = H * 0.43;
+  const sg = ctx.createLinearGradient(0, 0, 0, stageH);
+  sg.addColorStop(0, '#5B2D8E');
+  sg.addColorStop(1, '#7D3EC6');
+  ctx.fillStyle = sg;
+  ctx.fillRect(0, 0, W, stageH);
+
+  // Stage front lip
+  ctx.fillStyle = '#3B1B5E';
+  ctx.fillRect(0, stageH - 8, W, 8);
+  ctx.fillStyle = '#C39BD3';
+  ctx.fillRect(0, stageH - 3, W, 3);
+
+  // Spotlights
+  for (let i = 0; i < 4; i++) {
+    const sx = W * (0.12 + i * 0.25);
+    const la = 0.10 + Math.sin(T*0.0025 + i*1.2) * 0.06;
+    const sg2 = ctx.createRadialGradient(sx, 0, 0, sx, 0, H*0.55);
+    sg2.addColorStop(0, `rgba(255,245,190,${la})`);
+    sg2.addColorStop(1, 'rgba(255,245,190,0)');
+    ctx.fillStyle = sg2;
+    ctx.beginPath();
+    ctx.moveTo(sx - 18, 0);
+    ctx.lineTo(sx - H*0.28, stageH);
+    ctx.lineTo(sx + H*0.28, stageH);
+    ctx.lineTo(sx + 18, 0);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Curtains
+  for (const side of [0, 1]) {
+    const cw = W * 0.09;
+    const cx2 = side === 0 ? 0 : W - cw;
+    ctx.fillStyle = '#7B1010';
+    ctx.fillRect(cx2, 0, cw, stageH);
+    // fold lines
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+    ctx.lineWidth = 3;
+    for (let f = 1; f < 5; f++) {
+      const fx = side === 0 ? cw*f/5 : W - cw + cw*f/5;
+      ctx.beginPath(); ctx.moveTo(fx, 0); ctx.lineTo(fx, stageH); ctx.stroke();
+    }
+  }
+
+  // "BAND ROOM" sign
+  const signW = W*0.28, signH = 36;
+  const signX = W/2 - signW/2, signY = 5;
+  rr(signX, signY, signW, signH, 8, '#2C1654', null);
+  rr(signX, signY, signW, signH, 8, null, '#C39BD3');
+  ctx.fillStyle = '#F0E6FF';
+  ctx.font = `bold ${Math.min(18, signH*0.55)}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.fillText('🎵 BAND ROOM 🎵', W/2, signY + signH*0.65);
+
+  // Band members
+  const charSz = Math.min(W, H) * 0.038;
+  for (const bm of BAND) {
+    const bx  = bm.rx * W;
+    const by  = bm.ry * H;
+    const bob = Math.sin(T*0.004 + bm.rx*8) * (collected.has(bm.inst) ? 5 : 1.5);
+    const hasInst = collected.has(bm.inst);
+
+    drawChar(bx, by + bob, charSz, bm.col, bm.hat, hasInst, false);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#EEE';
+    ctx.font = `bold ${Math.max(11, charSz*0.52)}px Arial`;
+    ctx.fillText(bm.name, bx, by + bob + charSz + 16);
+
+    const inst = INSTRUMENTS.find(i => i.id === bm.inst);
+    if (hasInst) {
+      // instrument floating above
+      ctx.font = `${charSz * 1.7}px Arial`;
+      ctx.textBaseline = 'middle';
+      ctx.fillText(inst.emoji, bx, by + bob - charSz * 2.4);
+      ctx.textBaseline = 'alphabetic';
+    } else {
+      // empty stand with question mark
+      ctx.fillStyle = 'rgba(255,60,60,0.35)';
+      ctx.beginPath();
+      ctx.arc(bx, by + bob + charSz * 2.1, charSz * 0.65, 0, Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle = 'white';
+      ctx.font = `bold ${charSz}px Arial`;
+      ctx.fillText('?', bx, by + bob + charSz * 2.1 + charSz*0.38);
+    }
+  }
+
+  // Door (right wall)
+  drawRoomDoor();
+
+  // Player
+  const px  = rp.x * W;
+  const py  = rp.y * H;
+  const psz = Math.min(W, H) * 0.032;
+  drawChar(px, py, psz, '#3498DB', '#F1C40F', true, true);
+  ctx.fillStyle = 'white';
+  ctx.font = `bold ${psz*0.65}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.fillText('YOU', px, py + psz + 15);
+
+  // Hint arrow
+  const arrowBob = Math.sin(T*0.006) * 7;
+  ctx.fillStyle = 'rgba(255,255,100,0.9)';
+  ctx.font = `bold ${Math.min(20, W*0.024)}px Arial`;
+  ctx.textAlign = 'center';
+  if (collected.size === 0) {
+    ctx.fillText('Find the instruments! →', W*0.67, H*0.72 + arrowBob);
+    ctx.fillText('Walk through the door!', W*0.67, H*0.72 + arrowBob + 26);
+  } else if (collected.size < 4) {
+    ctx.fillText(`${4 - collected.size} more to find — go back in!`, W*0.67, H*0.72 + arrowBob);
+  } else {
+    ctx.fillStyle = 'rgba(100,255,100,0.95)';
+    ctx.fillText('🎉 All found! Great job!', W/2, H*0.72 + arrowBob);
+  }
+}
+
+function drawRoomDoor() {
+  const dx = W * 0.91;
+  const dy = H * 0.47;
+  const dw = W * 0.072;
+  const dh = H * 0.29;
+
+  // frame
+  ctx.fillStyle = '#5D2E0C';
+  ctx.fillRect(dx - 6, dy - 6, dw + 12, dh + 12);
+
+  // interior — glowing dark passage
+  const dg = ctx.createLinearGradient(dx, 0, dx + dw, 0);
+  dg.addColorStop(0, '#07071a');
+  dg.addColorStop(0.5, '#14143a');
+  dg.addColorStop(1, '#07071a');
+  ctx.fillStyle = dg;
+  ctx.fillRect(dx, dy, dw, dh);
+
+  // glow pulse
+  const gp = 0.38 + Math.sin(T*0.004) * 0.14;
+  const gg = ctx.createRadialGradient(dx+dw/2, dy+dh/2, 0, dx+dw/2, dy+dh/2, dw*0.9);
+  gg.addColorStop(0, `rgba(90,90,255,${gp})`);
+  gg.addColorStop(1, `rgba(90,90,255,0)`);
+  ctx.fillStyle = gg;
+  ctx.fillRect(dx, dy, dw, dh);
+
+  // sparkling stars inside door
+  for (let i = 0; i < 6; i++) {
+    const sx = dx + ((i*41.3) % dw);
+    const sy2 = dy + ((i*67.7 + T*0.04) % dh);
+    const sa = Math.sin(T*0.008 + i*2.1)*0.5 + 0.5;
+    ctx.fillStyle = `rgba(180,180,255,${sa})`;
+    ctx.beginPath();
+    ctx.arc(sx, sy2, 2, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = 'rgba(160,160,255,0.85)';
+  ctx.font = `bold ${dw*0.38}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.fillText('MAZE', dx + dw/2, dy + dh*0.55);
+
+  // frame border
+  ctx.strokeStyle = '#9B6914';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(dx - 6, dy - 6, dw + 12, dh + 12);
+
+  // knob
+  ctx.fillStyle = '#C9A227';
+  ctx.beginPath();
+  ctx.arc(dx + dw*0.16, dy + dh*0.5, 5, 0, Math.PI*2);
+  ctx.fill();
+}
+
+// ── SCENE: MAZE ────────────────────────────────
+
+function drawMaze() {
+  // background
+  ctx.fillStyle = '#0c0c25';
+  ctx.fillRect(0, 0, W, H);
+
+  updateCamera();
+
+  // tiles
+  for (let y = 0; y < MH; y++) {
+    for (let x = 0; x < MW; x++) {
+      const px = x * CELL - camX;
+      const py = y * CELL - camY;
+      if (px+CELL < 0 || px > W || py+CELL < 0 || py > H) continue;
+
+      if (mazeGrid[y][x] === 1) {
+        // wall
+        const wg = ctx.createLinearGradient(px, py, px, py+CELL);
+        wg.addColorStop(0, '#3a4f9e');
+        wg.addColorStop(1, '#253170');
+        ctx.fillStyle = wg;
+        ctx.fillRect(px, py, CELL, CELL);
+        ctx.fillStyle = 'rgba(255,255,255,0.07)';
+        ctx.fillRect(px, py, CELL, 3);
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.fillRect(px, py+CELL-3, CELL, 3);
+      } else {
+        // floor — slight checkerboard
+        ctx.fillStyle = (x+y)%2===0 ? '#18224a' : '#1e2a57';
+        ctx.fillRect(px, py, CELL, CELL);
+        ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px, py, CELL, CELL);
+      }
+    }
+  }
+
+  // entrance marker
+  {
+    const ex = CELL - camX;
+    const ey = CELL - camY;
+    const ep = 0.25 + Math.sin(T*0.005)*0.1;
+    ctx.fillStyle = `rgba(100,255,100,${ep})`;
+    ctx.fillRect(ex, ey, CELL, CELL);
+    ctx.font = `${CELL*0.55}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🚪', ex + CELL/2, ey + CELL/2);
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  // instruments
+  for (const item of items) {
+    if (item.collected) continue;
+    const ix = (item.gx + 0.5) * CELL - camX;
+    const iy = (item.gy + 0.5) * CELL - camY;
+    const bob = Math.sin(T*0.005 + item.gx) * 4;
+    const pulse = 1 + Math.sin(T*0.007) * 0.1;
+    const r = CELL * 0.32 * pulse;
+
+    // glow
+    const ig = ctx.createRadialGradient(ix, iy+bob, 0, ix, iy+bob, r*1.8);
+    ig.addColorStop(0, item.inst.col + 'BB');
+    ig.addColorStop(1, item.inst.col + '00');
+    ctx.fillStyle = ig;
+    ctx.beginPath();
+    ctx.arc(ix, iy+bob, r*1.8, 0, Math.PI*2);
+    ctx.fill();
+
+    // circle bg
+    ctx.beginPath();
+    ctx.arc(ix, iy+bob, r, 0, Math.PI*2);
+    ctx.fillStyle = item.inst.col;
+    ctx.fill();
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // emoji
+    ctx.font = `${r*1.5}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(item.inst.emoji, ix, iy+bob);
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  // player glow
+  const ppx = mp.px - camX;
+  const ppy = mp.py - camY;
+  const pg = ctx.createRadialGradient(ppx, ppy, 0, ppx, ppy, CELL*0.65);
+  pg.addColorStop(0, 'rgba(80,200,255,0.32)');
+  pg.addColorStop(1, 'rgba(80,200,255,0)');
+  ctx.fillStyle = pg;
+  ctx.beginPath();
+  ctx.arc(ppx, ppy, CELL*0.65, 0, Math.PI*2);
+  ctx.fill();
+
+  drawChar(ppx, ppy, CELL*0.38, '#3498DB', '#F1C40F', true, true);
+
+  // pickup floating text
+  for (let i = pickupFX.length-1; i >= 0; i--) {
+    const fx = pickupFX[i];
+    fx.y  += fx.vy;
+    fx.vy *= 0.94;
+    fx.a  -= 0.016;
+    if (fx.a <= 0) { pickupFX.splice(i,1); continue; }
+    ctx.save();
+    ctx.globalAlpha = fx.a;
+    ctx.font = `bold ${Math.min(32, CELL*0.65)}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'white';
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 3;
+    ctx.strokeText(fx.label, fx.x - camX, fx.y - camY);
+    ctx.fillText(fx.label, fx.x - camX, fx.y - camY);
+    ctx.restore();
+  }
+
+  // banner
+  const rem = items.filter(i => !i.collected).length;
+  const allGot = rem === 0;
+  const banW = 300, banH = 44;
+  ctx.save();
+  if (allGot) {
+    const pulse2 = 0.55 + Math.abs(Math.sin(T*0.007))*0.35;
+    rr(W/2-banW/2, 10, banW, banH, 10, `rgba(20,140,20,${pulse2})`, null);
+    ctx.fillStyle = 'white';
+    ctx.font = 'bold 19px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('🎉 All found! Head back to 🚪!', W/2, 38);
+  } else {
+    rr(W/2-banW/2, 10, banW, banH, 10, 'rgba(0,0,0,0.52)', null);
+    ctx.fillStyle = 'white';
+    ctx.font = 'bold 19px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`🎸 Find ${rem} more instrument${rem>1?'s':''}!`, W/2, 38);
+  }
+  ctx.restore();
+}
+
+// ── SCENE: WIN ─────────────────────────────────
+
+function drawWin() {
+  winTime++;
+
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#1a0a2e');
+  bg.addColorStop(1, '#0a180a');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // confetti stars
+  for (const s of winStars) {
+    s.x += s.vx; s.y += s.vy;
+    s.vy += 0.07;
+    s.rot += s.rotv;
+    if (s.y > H+30) { s.y=-20; s.x=Math.random()*W; s.vy=-Math.random()*4-2; }
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.rot);
+    ctx.fillStyle = s.col;
+    ctx.beginPath();
+    for (let i=0;i<5;i++){
+      const a=(i*Math.PI*2/5)-Math.PI/2;
+      const ai=a+Math.PI/5;
+      i===0 ? ctx.moveTo(Math.cos(a)*s.r, Math.sin(a)*s.r)
+            : ctx.lineTo(Math.cos(a)*s.r, Math.sin(a)*s.r);
+      ctx.lineTo(Math.cos(ai)*s.r*0.4, Math.sin(ai)*s.r*0.4);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.textAlign = 'center';
+
+  // title
+  const ts = Math.min(W*0.12, 80);
+  const bounce = Math.sin(winTime*0.05)*9;
+  ctx.save();
+  ctx.shadowColor = '#F1C40F';
+  ctx.shadowBlur = 32;
+  ctx.fillStyle = '#F1C40F';
+  ctx.font = `bold ${ts}px Arial`;
+  ctx.fillText('🎉 AMAZING! 🎉', W/2, H*0.18 + bounce);
+  ctx.restore();
+
+  ctx.fillStyle = 'white';
+  ctx.font = `bold ${Math.min(ts*0.47, 32)}px Arial`;
+  ctx.fillText('The band has ALL their instruments!', W/2, H*0.28);
+
+  // happy band
+  const bSz = Math.min(W,H)*0.042;
+  const bGap = Math.min(W*0.2, 190);
+  const bY   = H * 0.52;
+  for (let i=0; i<4; i++) {
+    const bx  = W/2 + (i-1.5)*bGap;
+    const bob = Math.sin(winTime*0.07 + i*1.3) * bSz*0.45;
+    drawChar(bx, bY+bob, bSz, BAND[i].col, BAND[i].hat, true, false);
+    ctx.font = `${bSz*2}px Arial`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(INSTRUMENTS[i].emoji, bx, bY+bob-bSz*2.6);
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = 'white';
+    ctx.font = `bold ${bSz*0.58}px Arial`;
+    ctx.fillText(BAND[i].name, bx, bY+bob+bSz+16);
+  }
+
+  // floating music notes
+  const notes = ['♩','♪','♫','♬'];
+  for (let i=0; i<9; i++) {
+    const nx = W/2 + Math.sin(winTime*0.04+i*2.0)*W*0.38;
+    const progress = ((winTime*0.7 + i*55) % (H*0.4)) / (H*0.4);
+    const ny = H*0.33 + progress * H*0.38;
+    ctx.globalAlpha = 0.85 - progress*0.85;
+    ctx.fillStyle = `hsl(${i*40+winTime},100%,68%)`;
+    ctx.font = `bold ${22+i*3}px Arial`;
+    ctx.fillText(notes[i%4], nx, ny);
+  }
+  ctx.globalAlpha = 1;
+
+  // Play again button
+  const bw2 = Math.min(W*0.4, 260), bh2 = 66;
+  const by2 = H * 0.84;
+  ctx.save();
+  ctx.shadowColor = '#E74C3C';
+  ctx.shadowBlur = 18 + Math.sin(winTime*0.07)*10;
+  rr(W/2-bw2/2, by2-bh2/2, bw2, bh2, bh2/2, '#E74C3C', null);
+  ctx.restore();
+  ctx.fillStyle = 'white';
+  ctx.font = 'bold 26px Arial';
+  ctx.fillText('🎮 Play Again!', W/2, by2+10);
+  winBtn = { x:W/2, y:by2, w:bw2, h:bh2 };
+}
+
+function makeWinStars() {
+  winStars = [];
+  for (let i=0;i<45;i++) {
+    winStars.push({
+      x: Math.random()*W, y: Math.random()*H,
+      vx: (Math.random()-0.5)*2.5,
+      vy: -Math.random()*4-1.5,
+      r:  Math.random()*12+5,
+      col:`hsl(${Math.random()*360},100%,62%)`,
+      rot:Math.random()*Math.PI*2,
+      rotv:(Math.random()-0.5)*0.18,
+    });
+  }
+}
+
+// ── GAME LOGIC ─────────────────────────────────
+
+function tryMove(dx, dy) {
+  if (mp.moving) return;
+  const nx = mp.gx+dx, ny = mp.gy+dy;
+  if (nx<0||nx>=MW||ny<0||ny>=MH) return;
+  if (mazeGrid[ny][nx]===1) return;
+  mp.gx = nx; mp.gy = ny;
+  mp.tx = (nx+0.5)*CELL;
+  mp.ty = (ny+0.5)*CELL;
+  mp.moving = true;
+}
+
+function updateMazePlayer(dt) {
+  if (!mp.moving) return;
+  const spd = CELL / 110 * dt;
+  const dx = mp.tx - mp.px;
+  const dy = mp.ty - mp.py;
+  const dist = Math.hypot(dx, dy);
+  if (dist <= spd || dist < 0.5) {
+    mp.px = mp.tx; mp.py = mp.ty;
+    mp.moving = false;
+    checkPickup();
+    checkMazeExit();
+  } else {
+    mp.px += dx/dist * spd;
+    mp.py += dy/dist * spd;
+  }
+}
+
+function checkPickup() {
+  for (const item of items) {
+    if (!item.collected && item.gx===mp.gx && item.gy===mp.gy) {
+      item.collected = true;
+      collected.add(item.inst.id);
+      pickupFX.push({
+        x: mp.px, y: mp.py - 20,
+        label: item.inst.emoji + ' Got ' + item.inst.name + '!',
+        a: 1, vy: -2.2,
+      });
+      updateHUD();
+    }
+  }
+}
+
+function checkMazeExit() {
+  if (collected.size === 4 && mp.gx===1 && mp.gy===1) {
+    setTimeout(() => {
+      scene = 'win';
+      dpadEl.style.display = 'none';
+      hudEl.style.display  = 'none';
+      winTime = 0;
+      makeWinStars();
+    }, 400);
+  }
+}
+
+function updateRoomPlayer(dt) {
+  const spd = Math.min(W,H) * 0.00038 * dt;
+  let mx=0, my=0;
+  if (keysHeld.has('ArrowLeft') ||keysHeld.has('a')||btnState.left)  mx-=1;
+  if (keysHeld.has('ArrowRight')||keysHeld.has('d')||btnState.right) mx+=1;
+  if (keysHeld.has('ArrowUp')   ||keysHeld.has('w')||btnState.up)    my-=1;
+  if (keysHeld.has('ArrowDown') ||keysHeld.has('s')||btnState.down)  my+=1;
+  if (mx===0&&my===0) return;
+  const len = Math.hypot(mx,my)||1;
+  rp.x = Math.max(0.04, Math.min(0.93, rp.x + mx/len*spd));
+  rp.y = Math.max(0.48, Math.min(0.96, rp.y + my/len*spd));
+
+  // door collision
+  const doorX=0.91, doorY=0.47, doorH=0.29;
+  if (rp.x > doorX - 0.025 && rp.y > doorY && rp.y < doorY+doorH) {
+    scene = 'maze';
+    dpadEl.style.display = 'flex';
+    hudEl.style.display  = 'flex';
+    // reset maze player to entrance
+    mp.gx=1; mp.gy=1;
+    mp.px=CELL*1.5; mp.py=CELL*1.5;
+    mp.tx=mp.px; mp.ty=mp.py;
+    mp.moving=false;
+    updateCamera();
+  }
+}
+
+// ── INPUT ──────────────────────────────────────
+
+function doMazeMove(dir) {
+  if      (dir==='up')    tryMove( 0,-1);
+  else if (dir==='down')  tryMove( 0, 1);
+  else if (dir==='left')  tryMove(-1, 0);
+  else if (dir==='right') tryMove( 1, 0);
+}
+
+function startRepeat(dir) {
+  stopRepeat();
+  repeatDir = dir;
+  doMazeMove(dir);
+  repeatTimer = setInterval(() => {
+    if (repeatDir && scene==='maze') doMazeMove(repeatDir);
+  }, REPEAT_MS);
+}
+
+function stopRepeat() {
+  clearInterval(repeatTimer);
+  repeatTimer = null;
+  repeatDir = null;
+}
+
+// Keyboard
+window.addEventListener('keydown', e => {
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))
+    e.preventDefault();
+  keysHeld.add(e.key);
+
+  if (scene==='menu') {
+    if (e.key==='Enter'||e.key===' ') startGame(diff);
+    if (e.key==='1') diff='easy';
+    if (e.key==='2') diff='medium';
+    if (e.key==='3') diff='hard';
+  }
+
+  if (scene==='maze') {
+    const map = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right',
+                  w:'up', s:'down', a:'left', d:'right' };
+    if (map[e.key]) startRepeat(map[e.key]);
+  }
+});
+
+window.addEventListener('keyup', e => {
+  keysHeld.delete(e.key);
+  const map = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right',
+                w:'up', s:'down', a:'left', d:'right' };
+  if (map[e.key] && scene==='maze') stopRepeat();
+});
+
+// D-pad setup
+function setupDpad() {
+  const dirs = { 'btn-up':'up', 'btn-down':'down', 'btn-left':'left', 'btn-right':'right' };
+  for (const [id, dir] of Object.entries(dirs)) {
+    const btn = document.getElementById(id);
+
+    const press = e => {
+      e.preventDefault();
+      btnState[dir] = true;
+      btn.classList.add('pressed');
+      if (scene==='maze') startRepeat(dir);
+    };
+    const release = e => {
+      e.preventDefault();
+      btnState[dir] = false;
+      btn.classList.remove('pressed');
+      if (scene==='maze') stopRepeat();
+    };
+
+    btn.addEventListener('touchstart', press, { passive:false });
+    btn.addEventListener('touchend',   release, { passive:false });
+    btn.addEventListener('touchcancel',release, { passive:false });
+    btn.addEventListener('mousedown',  press);
+    btn.addEventListener('mouseup',    release);
+    btn.addEventListener('mouseleave', release);
+  }
+}
+
+// Canvas tap / click
+function handleTap(cx, cy) {
+  if (scene==='menu') {
+    for (const [key, btn] of Object.entries(menuHits)) {
+      if (Math.abs(cx-btn.x)<btn.w/2 && Math.abs(cy-btn.y)<btn.h/2) {
+        if (key==='start') startGame(diff);
+        else if (key in DIFFICULTIES) diff=key;
+      }
+    }
+  }
+  if (scene==='win' && winBtn) {
+    if (Math.abs(cx-winBtn.x)<winBtn.w/2 && Math.abs(cy-winBtn.y)<winBtn.h/2) {
+      scene='menu';
+      dpadEl.style.display='none';
+      hudEl.style.display='none';
+    }
+  }
+}
+
+canvas.addEventListener('click', e => handleTap(e.clientX, e.clientY));
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  handleTap(t.clientX, t.clientY);
+}, { passive:false });
+
+// ── GAME LOOP ──────────────────────────────────
+
+function loop(ts) {
+  const dt = Math.min(ts - lastT, 50);
+  lastT = ts;
+  T += dt;
+
+  ctx.clearRect(0, 0, W, H);
+
+  switch (scene) {
+    case 'menu':
+      drawMenu();
+      break;
+    case 'room':
+      updateRoomPlayer(dt);
+      drawRoom();
+      break;
+    case 'maze':
+      updateMazePlayer(dt);
+      drawMaze();
+      break;
+    case 'win':
+      drawWin();
+      break;
+  }
+
+  requestAnimationFrame(loop);
+}
+
+setupDpad();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
